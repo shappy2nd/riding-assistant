@@ -47,6 +47,8 @@ Server only:
 
 `api/strava/*.js`는 Node 기반 서버리스 함수 형식입니다. 배포 플랫폼이 `/api` 서버리스 라우트를 지원해야 실제 OAuth가 작동합니다. Strava 개발자 설정의 Authorization Callback Domain은 실제 배포 도메인과 일치해야 합니다.
 
+OAuth scope는 현재 `read,activity:read`입니다. 비공개(Only Me) 활동까지 동기화하려면 `activity:read_all` 재승인이 필요합니다.
+
 ## Security
 
 실제 API 키, Client Secret, OAuth access/refresh token은 GitHub에 올리지 마세요. Strava 토큰은 서버가 HttpOnly 쿠키로 관리하도록 구성했습니다.
