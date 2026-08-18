@@ -2,6 +2,22 @@ const API_BASE = (import.meta.env.VITE_STRAVA_API_BASE || '').replace(/\/$/, '')
 
 function api(path){ return `${API_BASE}${path}`; }
 
+function decodePolyline(encoded=''){
+  if(!encoded) return [];
+  let index=0, lat=0, lng=0;
+  const points=[];
+  while(index<encoded.length){
+    let b, shift=0, result=0;
+    do{ b=encoded.charCodeAt(index++)-63; result|=(b&0x1f)<<shift; shift+=5; }while(b>=0x20 && index<=encoded.length);
+    const dlat=(result&1)?~(result>>1):(result>>1); lat+=dlat;
+    shift=0; result=0;
+    do{ b=encoded.charCodeAt(index++)-63; result|=(b&0x1f)<<shift; shift+=5; }while(b>=0x20 && index<=encoded.length);
+    const dlng=(result&1)?~(result>>1):(result>>1); lng+=dlng;
+    points.push([lat/1e5,lng/1e5]);
+  }
+  return points;
+}
+
 export async function getStravaStatus(){
   try{
     const res = await fetch(api('/api/strava/status'), { credentials:'include' });
@@ -25,16 +41,20 @@ export async function syncStravaActivities(){
   const activities = await res.json();
   return activities
     .filter(a => ['Ride','MountainBikeRide','GravelRide','VirtualRide','EBikeRide'].includes(a.sport_type || a.type))
-    .map(a => ({
-      id: String(a.id),
-      date: a.start_date_local || a.start_date,
-      distance: Number(a.distance || 0) / 1000,
-      minutes: Math.round(Number(a.moving_time || a.elapsed_time || 0) / 60),
-      source: 'Strava',
-      title: a.name || 'Strava 라이딩',
-      polyline: a.map?.summary_polyline || '',
-      elevation: Number(a.total_elevation_gain || 0)
-    }));
+    .map(a => {
+      const polyline=a.map?.summary_polyline || '';
+      return {
+        id: String(a.id),
+        date: a.start_date_local || a.start_date,
+        distance: Number(a.distance || 0) / 1000,
+        minutes: Math.round(Number(a.moving_time || a.elapsed_time || 0) / 60),
+        source: 'Strava',
+        title: a.name || 'Strava 라이딩',
+        polyline,
+        path: decodePolyline(polyline),
+        elevation: Number(a.total_elevation_gain || 0)
+      };
+    });
 }
 
 export function mergeRides(existing, incoming){
