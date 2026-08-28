@@ -1,190 +1,77 @@
 "use client";
+/* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps, react-hooks/static-components */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { CalendarDays, CircleStop, Map, Navigation, Play, Route, Save, Search, Trash2 } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-declare global {
-  interface Window {
-    kakao?: { maps: {
-      load: (callback: () => void) => void;
-      Map: new (container: HTMLElement, options: { center: unknown; level: number }) => { setCenter: (position: unknown) => void; addControl: (control: unknown, position: unknown) => void };
-      LatLng: new (lat: number, lng: number) => unknown;
-      Marker: new (options: { position: unknown }) => { setMap: (map: unknown) => void };
-      MapTypeControl: new () => unknown; ZoomControl: new () => unknown;
-      ControlPosition: { TOPRIGHT: unknown; RIGHT: unknown };
-    }};
-  }
+type Point = { lat: number; lng: number; time?: number; speed?: number };
+type Course = { id: string; name: string; start: Point; end: Point; createdAt: number };
+type Ride = { id: string; courseName: string; startedAt: number; endedAt: number; distance: number; maxSpeed: number; points: Point[] };
+type KMap = { setCenter:(p:unknown)=>void; addControl:(c:unknown,p:unknown)=>void; relayout:()=>void };
+type Overlay = { setMap:(map:unknown|null)=>void };
+type Polyline = Overlay & { setPath:(path:unknown[])=>void };
+
+declare global { interface Window { kakao?: { maps: {
+  load:(cb:()=>void)=>void; Map:new(el:HTMLElement,o:{center:unknown;level:number})=>KMap;
+  LatLng:new(lat:number,lng:number)=>{getLat:()=>number;getLng:()=>number};
+  Marker:new(o:{position:unknown})=>Overlay; Polyline:new(o:{path:unknown[];strokeWeight:number;strokeColor:string;strokeOpacity:number})=>Polyline;
+  ZoomControl:new()=>unknown; ControlPosition:{RIGHT:unknown};
+  event:{addListener:(target:unknown,event:string,cb:(e:{latLng:{getLat:()=>number;getLng:()=>number}})=>void)=>void};
+  services:{Places:new()=>{keywordSearch:(q:string,cb:(data:Array<{id:string;place_name:string;address_name:string;road_address_name:string;x:string;y:string}>,status:string)=>void)=>void};Status:{OK:string}}
+} } } }
+
+const SEOUL = { lat:37.5665, lng:126.978 }, COURSE_KEY="riding-saved-courses", RIDE_KEY="riding-saved-rides";
+type Weather={temperature:number;apparent:number;wind:number;gust:number;rainChance:number;sunset:string;score:number;summary:string;temperatureNote:string;windNote:string;rainNote:string};
+const distance=(a:Point,b:Point)=>{const r=6371000,rad=(v:number)=>v*Math.PI/180,dLat=rad(b.lat-a.lat),dLng=rad(b.lng-a.lng),x=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLng/2)**2;return 2*r*Math.atan2(Math.sqrt(x),Math.sqrt(1-x))};
+const pathDistance=(p:Point[])=>p.slice(1).reduce((s,x,i)=>s+distance(p[i],x),0);
+const fmtDistance=(m:number)=>m<1000?`${Math.round(m)} m`:`${(m/1000).toFixed(2)} km`;
+const fmtTime=(ms:number)=>{const t=Math.max(0,Math.floor(ms/1000));return `${String(Math.floor(t/3600)).padStart(2,"0")}:${String(Math.floor(t%3600/60)).padStart(2,"0")}:${String(t%60).padStart(2,"0")}`};
+
+export default function Home(){
+ const todayEl=useRef<HTMLDivElement>(null),courseEl=useRef<HTMLDivElement>(null),rideEl=useRef<HTMLDivElement>(null),recordEl=useRef<HTMLDivElement>(null);
+ const maps=useRef<Record<string,KMap>>({}), overlays=useRef<Record<string,Overlay[]>>({}), watchId=useRef<number|null>(null), started=useRef(0);
+ const [tab,setTab]=useState("today"),[key,setKey]=useState(""),[draftKey,setDraftKey]=useState(""),[status,setStatus]=useState<"setup"|"loading"|"ready"|"error">("setup"),[message,setMessage]=useState("카카오 JavaScript 키를 입력하면 지도가 열립니다.");
+ const [weather,setWeather]=useState<Weather|null>(null),[weatherMessage,setWeatherMessage]=useState("위치를 확인하면 실제 날씨를 불러옵니다.");
+ const [courses,setCourses]=useState<Course[]>([]),[rides,setRides]=useState<Ride[]>([]),[courseName,setCourseName]=useState(""),[start,setStart]=useState<Point|null>(null),[end,setEnd]=useState<Point|null>(null);
+ const [search,setSearch]=useState(""),[results,setResults]=useState<Array<{id:string;name:string;address:string;point:Point}>>([]),[courseId,setCourseId]=useState(""),[ridePoints,setRidePoints]=useState<Point[]>([]),[riding,setRiding]=useState(false),[elapsed,setElapsed]=useState(0),[notice,setNotice]=useState("저장한 코스를 선택하고 주행을 시작하세요."),[rideId,setRideId]=useState("");
+ const selectedCourse=courses.find(c=>c.id===courseId)||null,rideDistance=useMemo(()=>pathDistance(ridePoints),[ridePoints]),avgSpeed=elapsed?rideDistance/(elapsed/1000)*3.6:0;
+
+ useEffect(()=>{const k=localStorage.getItem("riding-kakao-js-key")||"";if(k){setKey(k);setDraftKey(k)}try{setCourses(JSON.parse(localStorage.getItem(COURSE_KEY)||"[]"));setRides(JSON.parse(localStorage.getItem(RIDE_KEY)||"[]"))}catch{}},[]);
+ useEffect(()=>{if(!key)return;setStatus("loading");document.querySelector("script[data-kakao-map]")?.remove();delete window.kakao;const s=document.createElement("script");s.dataset.kakaoMap="true";s.async=true;s.src=`https://dapi.kakao.com/v2/maps/sdk.js?appkey=${encodeURIComponent(key)}&autoload=false&libraries=services`;s.onload=()=>window.kakao?.maps.load(()=>{setStatus("ready");setMessage("지도가 연결되었습니다.");setTimeout(initMaps,0);locate()});s.onerror=()=>{setStatus("error");setMessage("지도를 열지 못했습니다. 키와 등록 주소를 확인해 주세요.")};document.head.appendChild(s);return()=>s.remove()},[key]);
+ useEffect(()=>{if(status==="ready")setTimeout(()=>{initMaps();maps.current[tab]?.relayout();redraw()},30)},[tab,status]);
+ useEffect(()=>{if(!riding)return;const t=setInterval(()=>setElapsed(Date.now()-started.current),1000);return()=>clearInterval(t)},[riding]);
+
+ function makeMap(name:string,el:HTMLDivElement|null,level=6){if(!window.kakao||!el||maps.current[name])return;const m=new window.kakao.maps.Map(el,{center:new window.kakao.maps.LatLng(SEOUL.lat,SEOUL.lng),level});m.addControl(new window.kakao.maps.ZoomControl(),window.kakao.maps.ControlPosition.RIGHT);maps.current[name]=m;overlays.current[name]=[];if(name==="course")window.kakao.maps.event.addListener(m,"click",e=>pickPoint({lat:e.latLng.getLat(),lng:e.latLng.getLng()}))}
+ function initMaps(){makeMap("today",todayEl.current);makeMap("course",courseEl.current);makeMap("ride",rideEl.current,5);makeMap("records",recordEl.current,5);redraw()}
+ function clear(name:string){overlays.current[name]?.forEach(o=>o.setMap(null));overlays.current[name]=[]}
+ function addMarker(name:string,p:Point){if(!window.kakao||!maps.current[name])return;const m=new window.kakao.maps.Marker({position:new window.kakao.maps.LatLng(p.lat,p.lng)});m.setMap(maps.current[name]);overlays.current[name].push(m)}
+ function addLine(name:string,p:Point[],color="#176b4a"){if(!window.kakao||!maps.current[name]||p.length<2)return;const l=new window.kakao.maps.Polyline({path:p.map(x=>new window.kakao!.maps.LatLng(x.lat,x.lng)),strokeWeight:6,strokeColor:color,strokeOpacity:.85});l.setMap(maps.current[name]);overlays.current[name].push(l)}
+ function redraw(){if(!window.kakao)return;clear("course");if(start)addMarker("course",start);if(end)addMarker("course",end);if(start&&end)addLine("course",[start,end]);clear("ride");if(selectedCourse){addMarker("ride",selectedCourse.start);addMarker("ride",selectedCourse.end);addLine("ride",[selectedCourse.start,selectedCourse.end],"#9ab43b")}if(ridePoints.length){addLine("ride",ridePoints);addMarker("ride",ridePoints.at(-1)!)}const r=rides.find(x=>x.id===rideId);clear("records");if(r?.points.length){addLine("records",r.points);addMarker("records",r.points[0]);addMarker("records",r.points.at(-1)!);maps.current.records?.setCenter(new window.kakao.maps.LatLng(r.points[0].lat,r.points[0].lng))}}
+ useEffect(redraw,[start,end,courseId,ridePoints,rideId,rides]);
+
+ function locate(){if(!navigator.geolocation){void loadWeather(SEOUL.lat,SEOUL.lng,"서울시청 기준");return}setMessage("현재 위치를 찾는 중입니다…");navigator.geolocation.getCurrentPosition(({coords})=>{const p={lat:coords.latitude,lng:coords.longitude};if(!window.kakao)return;Object.values(maps.current).forEach(m=>m.setCenter(new window.kakao!.maps.LatLng(p.lat,p.lng)));clear("today");addMarker("today",p);setMessage("현재 위치를 지도에 표시했습니다.");void loadWeather(p.lat,p.lng,"현재 위치 기준")},()=>{setMessage("위치 권한이 없어 서울시청을 표시합니다.");void loadWeather(SEOUL.lat,SEOUL.lng,"서울시청 기준")},{enableHighAccuracy:true,timeout:10000,maximumAge:60000})}
+ async function loadWeather(lat:number,lng:number,label:string){setWeatherMessage(`${label} 날씨를 불러오는 중입니다…`);try{const q=new URLSearchParams({latitude:String(lat),longitude:String(lng),timezone:"auto",wind_speed_unit:"ms",current:"temperature_2m,apparent_temperature,precipitation,rain,weather_code,wind_speed_10m,wind_gusts_10m",daily:"sunrise,sunset,precipitation_probability_max"}),d=await(await fetch(`https://api.open-meteo.com/v1/forecast?${q}`)).json(),c=d.current,a=Number(c.apparent_temperature),w=Number(c.wind_speed_10m),g=Number(c.wind_gusts_10m),rain=Number(c.rain||0),chance=Number(d.daily.precipitation_probability_max[0]||0),sunset=d.daily.sunset[0],sunrise=d.daily.sunrise[0];let score=100;if(a<=0)score-=30;else if(a<5)score-=20;else if(a>=35)score-=40;else if(a>=30)score-=25;if(w>=15)score-=40;else if(w>=10)score-=28;else if(w>=7)score-=18;if(g>=14)score-=10;if(rain>0)score-=35;if(chance>=70)score-=25;else if(chance>=40)score-=15;const now=new Date();if(now<new Date(sunrise)||now>new Date(sunset))score-=20;score=Math.max(0,Math.min(100,Math.round(score)));setWeather({temperature:Number(c.temperature_2m),apparent:a,wind:w,gust:g,rainChance:chance,sunset,score,summary:score>=85?"라이딩하기 아주 좋은 날이에요":score>=70?"가볍게 달리기 좋은 날이에요":score>=50?"주의하며 짧게 달리세요":"오늘은 라이딩을 미루세요",temperatureNote:a>=30?"더위 주의":a<=5?"방한 준비":"쾌적해요",windNote:w>=10?"강풍 주의":w>=7?"바람 주의":"약한 바람",rainNote:rain>0?"현재 비가 와요":chance>=40?"우비를 챙기세요":"비 가능성 낮음"});setWeatherMessage(`${label} · ${new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})} 갱신`)}catch{setWeatherMessage("날씨를 불러오지 못했습니다. 현재 위치를 다시 눌러주세요.")}}
+ function saveKey(){const k=draftKey.trim();if(!k)return setMessage("JavaScript 키를 입력해 주세요.");localStorage.setItem("riding-kakao-js-key",k);setKey(k)}
+ function pickPoint(p:Point){if(!start||end){setStart(p);setEnd(null);setMessage("출발점을 정했습니다. 도착점을 눌러주세요.")}else{setEnd(p);setMessage("도착점을 정했습니다. 코스 이름을 입력해 저장하세요.")}}
+ function searchPlaces(){if(!window.kakao||!search.trim())return;new window.kakao.maps.services.Places().keywordSearch(search.trim(),(d,s)=>setResults(s===window.kakao!.maps.services.Status.OK?d.slice(0,6).map(x=>({id:x.id,name:x.place_name,address:x.road_address_name||x.address_name,point:{lat:Number(x.y),lng:Number(x.x)}})):[]))}
+ function saveCourse(){if(!start||!end)return setMessage("지도에서 출발점과 도착점을 차례로 선택해 주세요.");const c={id:crypto.randomUUID(),name:courseName.trim()||`나의 코스 ${courses.length+1}`,start,end,createdAt:Date.now()},all=[c,...courses];setCourses(all);localStorage.setItem(COURSE_KEY,JSON.stringify(all));setCourseId(c.id);setCourseName("");setMessage("코스를 이 기기에 저장했습니다.")}
+ function deleteCourse(id:string){const all=courses.filter(c=>c.id!==id);setCourses(all);localStorage.setItem(COURSE_KEY,JSON.stringify(all));if(courseId===id)setCourseId("")}
+ function beginRide(){if(!selectedCourse)return setNotice("먼저 저장한 코스를 선택해 주세요.");if(!navigator.geolocation)return setNotice("이 기기에서는 위치 기능을 사용할 수 없습니다.");setRidePoints([]);setElapsed(0);started.current=Date.now();setRiding(true);setNotice("GPS 기록 중입니다. 화면 조작은 정차 후 해주세요.");watchId.current=navigator.geolocation.watchPosition(({coords,timestamp})=>{const p={lat:coords.latitude,lng:coords.longitude,time:timestamp,speed:coords.speed==null?undefined:coords.speed*3.6};setRidePoints(old=>[...old,p]);if(window.kakao)maps.current.ride?.setCenter(new window.kakao.maps.LatLng(p.lat,p.lng))},()=>setNotice("위치를 읽지 못했습니다. 브라우저 위치 권한을 확인해 주세요."),{enableHighAccuracy:true,maximumAge:1000,timeout:15000})}
+ function stopRide(){if(watchId.current!==null)navigator.geolocation.clearWatch(watchId.current);watchId.current=null;setRiding(false);if(ridePoints.length<2)return setNotice("기록된 위치가 너무 적어 저장하지 않았습니다.");const r={id:crypto.randomUUID(),courseName:selectedCourse?.name||"자유 주행",startedAt:started.current,endedAt:Date.now(),distance:pathDistance(ridePoints),maxSpeed:Math.max(0,...ridePoints.map(p=>p.speed||0)),points:ridePoints},all=[r,...rides];setRides(all);localStorage.setItem(RIDE_KEY,JSON.stringify(all));setRideId(r.id);setNotice("주행을 종료하고 기록 탭에 저장했습니다.")}
+ function deleteRide(id:string){const all=rides.filter(r=>r.id!==id);setRides(all);localStorage.setItem(RIDE_KEY,JSON.stringify(all));if(rideId===id)setRideId("")}
+ const MapSetup=()=>status==="setup"||status==="error"?<div className="setupPanel"><div className="kakaoBadge">KAKAO MAP</div><h3>{status==="error"?"지도를 열지 못했어요":"지도 연결하기"}</h3><p>카카오 Developers의 <b>JavaScript 키</b>를 붙여 넣으세요.</p><input type="password" value={draftKey} onChange={e=>setDraftKey(e.target.value)} placeholder="키를 여기에 붙여 넣기"/><button onClick={saveKey}>카카오 지도 열기</button><small>키와 기록은 이 기기에만 저장됩니다.</small></div>:status==="loading"?<div className="loadingPanel"><span className="spinner"/>지도 준비 중</div>:null;
+
+ return <main><header className="topbar"><div className="brand"><span className="brandMark">↗</span><div><strong>내 라이딩 비서</strong><span>오늘의 라이딩을 더 안전하게</span></div></div><div className="live"><span/>라이딩 준비</div></header><section className="dashboard"><Tabs value={tab} onValueChange={setTab} className="appTabs"><TabsList className="tabBar"><TabsTrigger value="today"><CalendarDays/>오늘</TabsTrigger><TabsTrigger value="course"><Route/>코스</TabsTrigger><TabsTrigger value="ride"><Navigation/>주행</TabsTrigger><TabsTrigger value="records"><Map/>기록</TabsTrigger></TabsList>
+ <TabsContent value="today"><div className="intro"><div><p className="eyebrow">RIDE SMART · RIDE SAFE</p><h1>출발 전에<br/><em>길부터 확인하세요.</em></h1><p className="introText">현재 위치의 날씨와 실제 카카오 지도를 확인하고 안전하게 라이딩을 준비하세요.</p></div><div className="scoreCard"><span>현재 라이딩 지수</span><strong>{weather?.score??"--"}<small>점</small></strong><p>{weather?.summary??"위치를 확인하고 있어요"}</p><small className="weatherSource">{weatherMessage}</small></div></div><div className="stats"><Stat label="기온 · 체감" value={weather?`${Math.round(weather.temperature)}° · ${Math.round(weather.apparent)}°`:"--"} note={weather?.temperatureNote||"불러오는 중"}/><Stat label="바람 · 돌풍" value={weather?`${weather.wind.toFixed(1)} m/s`:"--"} note={weather?`${weather.windNote} · 돌풍 ${weather.gust.toFixed(1)}`:"불러오는 중"}/><Stat label="오늘 강수확률" value={weather?`${weather.rainChance}%`:"--"} note={weather?.rainNote||"불러오는 중"}/><Stat label="일몰" value={weather?new Date(weather.sunset).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",hour12:false}):"--"} note="야간 라이트 확인"/></div><MapCard title="내 주변 라이딩 지도" message={message} mapRef={todayEl} setup={<MapSetup/>} action={<button className="primaryButton" onClick={locate} disabled={status!=="ready"}>◎ 현재 위치</button>}/></TabsContent>
+ <TabsContent value="course"><PageTitle eyebrow="COURSE MAKER" title="라이딩 코스 찾기·저장" text="장소를 검색하거나 지도에서 출발점과 도착점을 차례로 누르세요."/><div className="split"><aside className="sidePanel"><div className="searchBox"><input value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>e.key==="Enter"&&searchPlaces()} placeholder="장소 검색 (예: 반포한강공원)"/><button onClick={searchPlaces}><Search/></button></div>{results.length>0&&<div className="searchResults">{results.map(r=><button key={r.id} onClick={()=>{pickPoint(r.point);maps.current.course?.setCenter(new window.kakao!.maps.LatLng(r.point.lat,r.point.lng))}}><strong>{r.name}</strong><span>{r.address}</span></button>)}</div>}<div className="formBlock"><label>코스 이름</label><input value={courseName} onChange={e=>setCourseName(e.target.value)} placeholder="예: 한강 저녁 코스"/><div className="pointStatus"><span className={start?"done":""}>1 출발점 {start?"완료":"선택"}</span><span className={end?"done":""}>2 도착점 {end?"완료":"선택"}</span></div><button className="primaryButton full" onClick={saveCourse}><Save/>코스 저장</button></div><h3>저장한 코스 <small>{courses.length}</small></h3><div className="savedList">{courses.length?courses.map(c=><div className="savedItem" key={c.id}><button onClick={()=>{setCourseId(c.id);setStart(c.start);setEnd(c.end)}}>{c.name}<span>직선거리 {fmtDistance(distance(c.start,c.end))}</span></button><button className="iconButton" onClick={()=>deleteCourse(c.id)}><Trash2/></button></div>):<Empty text="아직 저장한 코스가 없습니다."/>}</div></aside><section className="mapCard compact"><div className="mapWrap"><div ref={courseEl} className="map"/><MapSetup/></div><div className="mapFooter">지도를 누르면 출발점과 도착점을 선택할 수 있습니다.</div></section></div></TabsContent>
+ <TabsContent value="ride"><PageTitle eyebrow="RIDE NAVIGATION" title="주행 내비게이션" text="저장한 코스를 선택하고 GPS 기록을 시작하세요. 실제 도로 상황과 교통법규를 우선하세요."/><div className="rideControls"><select value={courseId} onChange={e=>setCourseId(e.target.value)} disabled={riding}><option value="">저장한 코스 선택</option>{courses.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>{!riding?<button className="startButton" onClick={beginRide}><Play/>주행 시작</button>:<button className="stopButton" onClick={stopRide}><CircleStop/>주행 종료·저장</button>}{selectedCourse&&<a className="kakaoLink" href={`https://map.kakao.com/link/to/${encodeURIComponent(selectedCourse.name)},${selectedCourse.end.lat},${selectedCourse.end.lng}`} target="_blank" rel="noreferrer">카카오맵 길안내 ↗</a>}</div><div className="rideStats"><RideStat label="주행 시간" value={fmtTime(elapsed)}/><RideStat label="주행 거리" value={fmtDistance(rideDistance)}/><RideStat label="평균 속도" value={`${avgSpeed.toFixed(1)} km/h`}/><RideStat label="목적지까지" value={selectedCourse&&ridePoints.length?fmtDistance(distance(ridePoints.at(-1)!,selectedCourse.end)):"--"}/></div><p className={`notice ${riding?"active":""}`}>{notice}</p><section className="mapCard compact"><div className="mapWrap"><div ref={rideEl} className="map"/><MapSetup/></div></section></TabsContent>
+ <TabsContent value="records"><PageTitle eyebrow="RIDE HISTORY" title="나의 주행 기록" text="실제로 달린 GPS 경로와 거리·시간·속도를 이 기기에서 확인합니다."/><div className="recordsLayout"><aside className="recordList">{rides.length?rides.map(r=><div className={`recordCard ${rideId===r.id?"selected":""}`} key={r.id}><button onClick={()=>setRideId(r.id)}><span>{new Date(r.startedAt).toLocaleDateString("ko-KR")}</span><strong>{r.courseName}</strong><div><b>{fmtDistance(r.distance)}</b><b>{fmtTime(r.endedAt-r.startedAt)}</b><b>최고 {r.maxSpeed.toFixed(1)} km/h</b></div></button><button className="iconButton" onClick={()=>deleteRide(r.id)}><Trash2/></button></div>):<Empty text="주행을 마치면 기록이 자동 저장됩니다."/>}</aside><section className="mapCard compact"><div className="mapWrap"><div ref={recordEl} className="map"/><MapSetup/>{!rideId&&rides.length>0&&<div className="mapHint">기록을 선택하면 실제 주행 경로가 표시됩니다.</div>}</div></section></div></TabsContent>
+ </Tabs></section></main>
 }
 
-const SEOUL = { lat: 37.5665, lng: 126.978 };
-
-type Weather = {
-  temperature: number;
-  apparent: number;
-  wind: number;
-  gust: number;
-  rain: number;
-  rainChance: number;
-  sunrise: string;
-  sunset: string;
-  score: number;
-  summary: string;
-  temperatureNote: string;
-  windNote: string;
-  rainNote: string;
-};
-
-export default function Home() {
-  const mapElement = useRef<HTMLDivElement>(null);
-  const mapInstance = useRef<{ setCenter: (position: unknown) => void } | null>(null);
-  const markerInstance = useRef<{ setMap: (map: unknown) => void } | null>(null);
-  const [key, setKey] = useState("");
-  const [draftKey, setDraftKey] = useState("");
-  const [status, setStatus] = useState<"setup" | "loading" | "ready" | "error">("setup");
-  const [message, setMessage] = useState("카카오 JavaScript 키를 입력하면 지도가 열립니다.");
-  const [weather, setWeather] = useState<Weather | null>(null);
-  const [weatherMessage, setWeatherMessage] = useState("위치를 확인하면 실제 날씨를 불러옵니다.");
-
-  useEffect(() => {
-    const savedKey = window.localStorage.getItem("riding-kakao-js-key") ?? "";
-    if (savedKey) { setKey(savedKey); setDraftKey(savedKey); }
-  }, []);
-
-  useEffect(() => {
-    if (!key || !mapElement.current) return;
-    setStatus("loading");
-    setMessage("카카오 지도를 불러오는 중입니다…");
-    document.querySelector("script[data-kakao-map]")?.remove();
-    delete window.kakao;
-    const script = document.createElement("script");
-    script.dataset.kakaoMap = "true";
-    script.async = true;
-    script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${encodeURIComponent(key)}&autoload=false`;
-    script.onload = () => {
-      if (!window.kakao || !mapElement.current) return showMapError();
-      window.kakao.maps.load(() => {
-        if (!window.kakao || !mapElement.current) return showMapError();
-        const center = new window.kakao.maps.LatLng(SEOUL.lat, SEOUL.lng);
-        const map = new window.kakao.maps.Map(mapElement.current, { center, level: 6 });
-        map.addControl(new window.kakao.maps.MapTypeControl(), window.kakao.maps.ControlPosition.TOPRIGHT);
-        map.addControl(new window.kakao.maps.ZoomControl(), window.kakao.maps.ControlPosition.RIGHT);
-        mapInstance.current = map;
-        setStatus("ready");
-        setMessage("지도가 연결되었습니다. 현재 위치를 찾고 있습니다…");
-        locateUser();
-      });
-    };
-    script.onerror = showMapError;
-    document.head.appendChild(script);
-    return () => script.remove();
-  }, [key]);
-
-  function showMapError() {
-    setStatus("error");
-    setMessage("지도를 열지 못했습니다. 키와 등록된 사이트 주소를 확인해 주세요.");
-  }
-
-  function locateUser() {
-    if (!navigator.geolocation) {
-      setMessage("위치 기능을 지원하지 않아 서울시청을 표시합니다.");
-      void loadWeather(SEOUL.lat, SEOUL.lng, "서울시청 기준");
-      return;
-    }
-    setMessage("현재 위치를 찾는 중입니다…");
-    navigator.geolocation.getCurrentPosition(({ coords }) => {
-      if (!window.kakao || !mapInstance.current) return;
-      const position = new window.kakao.maps.LatLng(coords.latitude, coords.longitude);
-      mapInstance.current.setCenter(position);
-      markerInstance.current?.setMap(null);
-      const marker = new window.kakao.maps.Marker({ position });
-      marker.setMap(mapInstance.current);
-      markerInstance.current = marker;
-      setMessage("현재 위치를 지도에 표시했습니다.");
-      void loadWeather(coords.latitude, coords.longitude, "현재 위치 기준");
-    }, () => {
-      setMessage("위치 권한이 없어 서울시청을 표시합니다.");
-      void loadWeather(SEOUL.lat, SEOUL.lng, "서울시청 기준");
-    }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
-  }
-
-  async function loadWeather(lat: number, lng: number, label: string) {
-    setWeatherMessage(`${label} 날씨를 불러오는 중입니다…`);
-    try {
-      const params = new URLSearchParams({
-        latitude: String(lat), longitude: String(lng), timezone: "auto", wind_speed_unit: "ms",
-        current: "temperature_2m,apparent_temperature,precipitation,rain,weather_code,wind_speed_10m,wind_gusts_10m",
-        daily: "sunrise,sunset,precipitation_probability_max"
-      });
-      const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
-      if (!response.ok) throw new Error("weather request failed");
-      const data = await response.json();
-      const current = data.current;
-      const sunrise = data.daily.sunrise[0] as string;
-      const sunset = data.daily.sunset[0] as string;
-      const rainChance = Number(data.daily.precipitation_probability_max[0] ?? 0);
-      const apparent = Number(current.apparent_temperature);
-      const wind = Number(current.wind_speed_10m);
-      const gust = Number(current.wind_gusts_10m);
-      const rain = Number(current.rain ?? current.precipitation ?? 0);
-      const code = Number(current.weather_code);
-      let score = 100;
-      if (apparent <= 0) score -= 30; else if (apparent < 5) score -= 20; else if (apparent < 10) score -= 8;
-      if (apparent >= 35) score -= 40; else if (apparent >= 30) score -= 25; else if (apparent >= 27) score -= 10;
-      if (wind >= 15) score -= 40; else if (wind >= 10) score -= 28; else if (wind >= 7) score -= 18; else if (wind >= 4) score -= 7;
-      if (gust >= 20) score -= 20; else if (gust >= 14) score -= 10;
-      if (rain > 0) score -= 35;
-      if (rainChance >= 70) score -= 25; else if (rainChance >= 40) score -= 15; else if (rainChance >= 20) score -= 6;
-      if (code >= 95) score -= 40; else if (code >= 71 && code <= 86) score -= 35;
-      const now = new Date();
-      if (now < new Date(sunrise) || now > new Date(sunset)) score -= 20;
-      score = Math.max(0, Math.min(100, Math.round(score)));
-      const summary = score >= 85 ? "라이딩하기 아주 좋은 날이에요" : score >= 70 ? "가볍게 달리기 좋은 날이에요" : score >= 50 ? "주의하며 짧게 달리세요" : score >= 30 ? "오늘은 라이딩을 권하지 않아요" : "안전을 위해 라이딩을 미루세요";
-      setWeather({
-        temperature: Number(current.temperature_2m), apparent, wind, gust, rain, rainChance,
-        sunrise, sunset, score, summary,
-        temperatureNote: apparent >= 30 ? "더위 주의" : apparent <= 5 ? "방한 준비" : "쾌적해요",
-        windNote: wind >= 10 ? "강풍 주의" : wind >= 7 ? "바람 주의" : wind >= 4 ? "약간 강해요" : "약한 바람",
-        rainNote: rain > 0 ? "현재 비가 와요" : rainChance >= 40 ? "우비를 챙기세요" : "비 가능성 낮음"
-      });
-      setWeatherMessage(`${label} · ${new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 갱신`);
-    } catch {
-      setWeatherMessage("날씨를 불러오지 못했습니다. 잠시 후 현재 위치를 다시 눌러주세요.");
-    }
-  }
-
-  function saveKey() {
-    const cleanKey = draftKey.trim();
-    if (!cleanKey) return setMessage("JavaScript 키를 입력해 주세요.");
-    window.localStorage.setItem("riding-kakao-js-key", cleanKey);
-    setKey(cleanKey);
-  }
-
-  function resetKey() {
-    window.localStorage.removeItem("riding-kakao-js-key");
-    window.location.reload();
-  }
-
-  return <main>
-    <header className="topbar">
-      <div className="brand"><span className="brandMark">↗</span><div><strong>내 라이딩 비서</strong><span>오늘의 라이딩을 더 안전하게</span></div></div>
-      <div className="live"><span /> 라이딩 준비</div>
-    </header>
-    <section className="dashboard">
-      <div className="intro">
-        <div><p className="eyebrow">RIDE SMART · RIDE SAFE</p><h1>출발 전에<br /><em>길부터 확인하세요.</em></h1><p className="introText">현재 위치를 중심으로 실제 카카오 지도를 확인하고 라이딩을 준비할 수 있습니다.</p></div>
-        <div className="scoreCard"><span>현재 라이딩 지수</span><strong>{weather?.score ?? "--"}<small>점</small></strong><p>{weather?.summary ?? "위치를 확인하고 있어요"}</p><small className="weatherSource">{weatherMessage}</small></div>
-      </div>
-      <div className="stats">
-        <article><span>기온 · 체감</span><strong>{weather ? `${Math.round(weather.temperature)}° · ${Math.round(weather.apparent)}°` : "--"}</strong><small>{weather?.temperatureNote ?? "불러오는 중"}</small></article><article><span>바람 · 돌풍</span><strong>{weather ? `${weather.wind.toFixed(1)} m/s` : "--"}</strong><small>{weather ? `${weather.windNote} · 돌풍 ${weather.gust.toFixed(1)}` : "불러오는 중"}</small></article><article><span>오늘 강수확률</span><strong>{weather ? `${weather.rainChance}%` : "--"}</strong><small>{weather?.rainNote ?? "불러오는 중"}</small></article><article><span>일몰</span><strong>{weather ? new Date(weather.sunset).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }) : "--"}</strong><small>야간 라이트 확인</small></article>
-      </div>
-      <section className="mapCard">
-        <div className="mapHeader"><div><p className="eyebrow">LIVE MAP</p><h2>내 주변 라이딩 지도</h2><p>{message}</p></div><button className="locateButton" onClick={locateUser} disabled={status !== "ready"}>◎ 현재 위치</button></div>
-        <div className="mapWrap">
-          <div ref={mapElement} className="map" aria-label="카카오 지도" />
-          {(status === "setup" || status === "error") && <div className="setupPanel"><div className="kakaoBadge">KAKAO MAP</div><h3>{status === "error" ? "지도를 열지 못했어요" : "지도 연결하기"}</h3><p>카카오 Developers에서 복사한 <b>JavaScript 키</b>를 아래 칸에 붙여 넣으세요.</p><label htmlFor="kakao-key">JavaScript 키</label><input id="kakao-key" type="password" value={draftKey} onChange={(e) => setDraftKey(e.target.value)} placeholder="키를 여기에 붙여 넣기" autoComplete="off" /><button onClick={saveKey}>카카오 지도 열기</button><small>키는 이 기기의 브라우저에만 저장됩니다.</small></div>}
-          {status === "loading" && <div className="loadingPanel"><span className="spinner" />지도를 준비하고 있습니다</div>}
-        </div>
-        <div className="mapFooter"><span>위치 사용을 허용하면 내 위치에 표시가 생깁니다.</span>{key && <button onClick={resetKey}>카카오 키 다시 입력</button>}</div>
-      </section>
-    </section>
-  </main>;
-}
+function PageTitle({eyebrow,title,text}:{eyebrow:string;title:string;text:string}){return <div className="pageTitle"><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p>{text}</p></div>}
+function Stat({label,value,note}:{label:string;value:string;note:string}){return <article><span>{label}</span><strong>{value}</strong><small>{note}</small></article>}
+function RideStat({label,value}:{label:string;value:string}){return <article><span>{label}</span><strong>{value}</strong></article>}
+function Empty({text}:{text:string}){return <div className="empty">{text}</div>}
+function MapCard({title,message,mapRef,setup,action}:{title:string;message:string;mapRef:React.RefObject<HTMLDivElement|null>;setup:React.ReactNode;action:React.ReactNode}){return <section className="mapCard"><div className="mapHeader"><div><p className="eyebrow">LIVE MAP</p><h2>{title}</h2><p>{message}</p></div>{action}</div><div className="mapWrap"><div ref={mapRef} className="map"/>{setup}</div></section>}
