@@ -1,32 +1,29 @@
-# Riding Assistant
+# 내 라이딩 비서
 
-라이딩 일정·코스·주행·기록을 관리하는 라이딩 비서 웹앱의 공동 편집용 저장소입니다.
+카카오 지도와 현재 위치의 실제 날씨를 이용해 라이딩 환경을 확인하는 웹앱입니다.
 
-## Migration status
+## 현재 기능
 
-- GitHub 공동 편집 저장소 준비 완료
-- 현재 ChatGPT Site의 원본 프로젝트 소스는 아직 이 저장소로 추출되지 않음
-- 원본으로 확인되지 않은 재작성 코드는 커밋하지 않음
-- Kakao / Strava 비밀정보는 `.env`로 분리하고 커밋하지 않음
+- 카카오 지도 표시 및 현재 위치 이동
+- 실제 기온과 체감온도
+- 바람과 돌풍
+- 오늘 강수확률과 일몰시간
+- 폭염, 한파, 강풍, 비, 야간을 반영한 라이딩 지수
+- PC와 모바일 반응형 화면
 
-## Current production site
+## 실행
 
-`riding-assistant.mose85.chatgpt.site`
+Node.js 22.13 이상이 필요합니다.
 
-## Known product areas
+```bash
+npm install
+npm run dev
+```
 
-- 오늘
-- 코스
-- 주행
-- 기록
-- 설정
-- Kakao 지도/경로 연동
-- Strava 연동
+## 카카오 지도 설정
 
-## Security
+카카오 Developers의 JavaScript 키에 사용할 사이트 도메인을 등록한 뒤, 앱 첫 화면에서 JavaScript 키를 입력합니다. 키는 해당 브라우저의 localStorage에만 저장됩니다.
 
-실제 API 키, Client Secret, OAuth access/refresh token은 GitHub에 올리지 마세요. 필요한 변수명만 `.env.example`에 유지합니다.
+## 배포 주소
 
-## Next migration step
-
-ChatGPT Site 원본 프로젝트 파일 또는 내보낸 ZIP을 확보하면 해당 파일을 원본 그대로 이 저장소에 이관하고, 이후 두 ChatGPT 계정에서 같은 GitHub 저장소를 기준으로 수정합니다.
+https://riding-assistant-new.norudang.chatgpt.site
